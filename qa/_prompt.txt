@@ -1,0 +1,15 @@
+@qa/chat_hybrid_30_10_ragas @qa/chat_multi_30_10_ragas @qa/chat_single_30_10_ragas 
+
+these are the metrics got from running the rag agent in hybrid, multi and single agent mode. How ot make the Hybrid more precise to make the metrics more close to:
+
+- context_recall near to that of single agent
+- answer_relevancy of multi agent
+- answer_correctness of single but even more if possible
+
+make necessary changes where needed for the hybrid agent python script.
+
+But, don't change the places that would affect, 'context_precision' and 'context_recall' since they are good.
+
+-List the inference of each metrics in the 'report_agents.md' file
+
+Also for the references if needed the answers of each _questions.txt are in the respective file name with json extension.
