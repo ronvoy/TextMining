@@ -84,16 +84,16 @@ class RAGConfig:
     
     # ---------------- Retrieval & Agentic behavior (omessi per brevità) ----------------
     top_k: int = 30
-    top_k_final: int = 20
-    similarity_threshold: float = 0.3
-    use_rerank: bool = False
+    top_k_final: int = 10
+    similarity_threshold: float = 0.45
+    use_rerank: bool = True
     rerank_metric: str = "cosine"  # "cosine", "dot_product", or "euclidean"
     
     agentic_mode: str = "standard_rag"
     use_multiagent: bool = False
     
     llm_temperature: float = 0.2
-    llm_max_tokens: int = 512
+    llm_max_tokens: int = 384
     
     logs_dir: str = "logs"
     enable_logging: bool = True

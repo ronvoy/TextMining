@@ -12,3 +12,5 @@ trash_miei/
 # Ignora i file di log o temporanei comuni
 *.log
 *.tmp
+
+.vscode/
