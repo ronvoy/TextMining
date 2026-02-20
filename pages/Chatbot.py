@@ -75,15 +75,17 @@ def render_sidebar():
             "Single Agent (ReAct)",
             "Multi-Agent (Supervisor)",
             "Hybrid (Metadata + Vector)",
+            "Hybrid Multi-Agent",
         ],
         help=(
             "**Single Agent**: One agent with ReAct-style reasoning\n\n"
             "**Multi-Agent**: Supervisor coordinates specialized agents\n\n"
-            "**Hybrid**: Metadata filtering + vector similarity (no ReAct)"
+            "**Hybrid**: Metadata filtering + vector similarity (no ReAct)\n\n"
+            "**Hybrid Multi-Agent**: Hybrid retrieval (LLM metadata + "
+            "two-phase fallback) with per-DB sub-agents and supervisor synthesis"
         )
     )
 
-    # Update config based on selection
     if agent_mode == "Single Agent (ReAct)":
         config.agentic_mode = "react"
         config.use_multiagent = False
@@ -91,6 +93,10 @@ def render_sidebar():
     elif agent_mode == "Multi-Agent (Supervisor)":
         config.agentic_mode = "react"
         config.use_multiagent = True
+
+    elif agent_mode == "Hybrid Multi-Agent":
+        config.agentic_mode = "hybrid_multiagent"
+        config.use_multiagent = False
 
     else:  # Hybrid (Metadata + Vector)
         config.agentic_mode = "hybrid_rag"
