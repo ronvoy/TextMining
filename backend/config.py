@@ -88,6 +88,8 @@ class RAGConfig:
     similarity_threshold: float = 0.45
     use_rerank: bool = True
     rerank_metric: str = "cosine"  # "cosine", "dot_product", or "euclidean"
+    use_cross_encoder: bool = True
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     
     agentic_mode: str = "standard_rag"
     use_multiagent: bool = False

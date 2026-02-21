@@ -1,0 +1,10 @@
+Aggregated (mean) scores
+context_precision: 0.800
+
+context_recall: 0.750
+
+faithfulness: 0.802
+
+answer_relevancy: 0.731
+
+answer_correctness: 0.639

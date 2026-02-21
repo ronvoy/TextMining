@@ -3,6 +3,7 @@
 # Hybrid Multi-Agent RAG:
 #   - Retrieval pipeline from Hybrid (LLM metadata extraction, heuristic DB
 #     selection, two-phase fallback, similarity reranking)
+#   - Cross-encoder reranking for improved context precision
 #   - Answer generation from Multi-Agent (per-DB sub-agents with isolated
 #     context windows + supervisor synthesis)
 
@@ -11,6 +12,7 @@ from __future__ import annotations
 from typing import Dict, List, Optional, Tuple, Any
 
 from langchain_core.documents import Document
+from sentence_transformers import CrossEncoder
 
 from .config import RAGConfig
 from .embeddings import get_embedding_model
@@ -27,6 +29,53 @@ from .hybrid_rag import (
     _build_observation_text,
     _build_agent_config_log,
 )
+
+# Singleton cache so the cross-encoder is loaded only once
+_CROSS_ENCODER_CACHE: Dict[str, CrossEncoder] = {}
+
+
+def _get_cross_encoder(model_name: str) -> CrossEncoder:
+    if model_name not in _CROSS_ENCODER_CACHE:
+        _CROSS_ENCODER_CACHE[model_name] = CrossEncoder(model_name)
+    return _CROSS_ENCODER_CACHE[model_name]
+
+
+def _cross_encoder_rerank(
+    question: str,
+    docs: List[Document],
+    top_k: int,
+    model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+) -> Tuple[List[Document], str]:
+    """
+    Re-score documents with a cross-encoder and keep the top_k highest.
+    Cross-encoders jointly encode (query, document) pairs, producing far
+    more accurate relevance scores than bi-encoder cosine similarity.
+    """
+    if not docs:
+        return [], "Cross-encoder rerank: no documents to rerank."
+
+    cross_encoder = _get_cross_encoder(model_name)
+
+    pairs = [(question, doc.page_content) for doc in docs]
+    scores = cross_encoder.predict(pairs)
+
+    scored = sorted(
+        zip(docs, scores), key=lambda x: float(x[1]), reverse=True
+    )
+
+    reranked = [doc for doc, _ in scored[:top_k]]
+
+    best = float(scored[0][1])
+    worst = float(scored[-1][1])
+    cutoff = float(scored[min(top_k - 1, len(scored) - 1)][1])
+
+    log = (
+        f"Cross-encoder rerank (model={model_name}):\n"
+        f"  Input docs: {len(docs)} → kept top {len(reranked)}\n"
+        f"  Score range (all):  [{worst:.4f} … {best:.4f}]\n"
+        f"  Cutoff score (rank {min(top_k, len(scored))}): {cutoff:.4f}"
+    )
+    return reranked, log
 
 
 # =====================================================================
@@ -95,6 +144,7 @@ def _run_hybrid_sub_agent(
 ) -> Tuple[str, List[Document], str]:
     """
     Sub-agent that uses hybrid's two-phase retrieval for a single DB,
+    applies cross-encoder reranking to maximise context precision,
     builds its own isolated context window, and generates a partial answer.
     """
     llm_backend = LLMBackend(config)
@@ -109,6 +159,27 @@ def _run_hybrid_sub_agent(
         rerank_metric=getattr(config, "rerank_metric", "cosine"),
         metadata_filter=metadata_filter,
     )
+
+    # --- Cross-encoder reranking: refine to top_k_final documents ---
+    top_k_final = getattr(config, "top_k_final", config.top_k)
+    use_ce = getattr(config, "use_cross_encoder", True)
+    ce_model = getattr(
+        config, "cross_encoder_model", "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    )
+
+    if use_ce and docs and len(docs) > top_k_final:
+        docs, ce_log = _cross_encoder_rerank(
+            question=question,
+            docs=docs,
+            top_k=top_k_final,
+            model_name=ce_model,
+        )
+        retrieval_log += f"\n{ce_log}"
+    elif docs and len(docs) > top_k_final:
+        docs = docs[:top_k_final]
+        retrieval_log += (
+            f"\nCross-encoder disabled; truncated to top_k_final={top_k_final}."
+        )
 
     context = _build_context(docs, max_chars=8000)
 
