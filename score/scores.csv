@@ -1,6 +1,8 @@
-architecture,top_k,top_k_final,context_precision,context_recall,faithfulness,answer_relevancy,answer_correctness
-Single Agent,30,10,0.800,0.742,0.780,0.641,0.695
-Multi Agent,30,10,0.800,0.767,0.653,0.810,0.628
-Hybrid,30,10,1.000,0.867,0.633,0.486,0.608
-Hybrid Multi-Agent (20/10),20,10,0.800,0.767,0.763,0.802,0.619
-Hybrid Multi-Agent (30/10),30,10,0.800,0.750,0.802,0.731,0.639
+architecture,context_precision,context_recall,faithfulness,answer_relevancy,answer_correctness
+Single Agent (30/10),0.8,0.742,0.78,0.641,0.695
+Multi Agent (10/7),0.8,0.733,0.805,0.82,0.627
+Multi Agent (30/10),0.8,0.767,0.653,0.81,0.628
+Hybrid (30/10),1.0,0.867,0.633,0.486,0.608
+Hybrid Multi-Agent (15/10),0.8,0.8,0.812,0.826,0.68
+Hybrid Multi-Agent (20/10),0.8,0.767,0.763,0.802,0.619
+Hybrid Multi-Agent (30/10),0.8,0.75,0.802,0.731,0.639
