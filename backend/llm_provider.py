@@ -3,11 +3,16 @@ from __future__ import annotations
 import os
 from typing import Optional
 
+from dotenv import load_dotenv
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_openai import ChatOpenAI
 from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 
 from backend.config import RAGConfig
+
+# Ensure .env is loaded whenever this module is imported, regardless of
+# which Streamlit page triggered the import first.
+load_dotenv()
 
 
 # Role of this module:
@@ -48,7 +53,9 @@ class LLMBackend:
     # OPENROUTER (OpenAI-compatible API)
     # ------------------------------------------------------------------
     def _build_openrouter_chat(self) -> BaseChatModel:
-        # Requires OPENROUTER_API_KEY in env
+        # Re-load .env at call time as a safety net (Streamlit may import
+        # modules before the page-level load_dotenv() has run).
+        load_dotenv()
         api_key = os.getenv("OPENROUTER_API_KEY")
         if not api_key:
             raise ValueError("OPENROUTER_API_KEY not found in environment variables")

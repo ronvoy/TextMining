@@ -9,6 +9,10 @@ import streamlit as st
 from pathlib import Path
 import sys
 
+# Load .env before any backend module reads environment variables
+from dotenv import load_dotenv
+load_dotenv()
+
 # Add backend to path
 sys.path.append(str(Path(__file__).parent))
 

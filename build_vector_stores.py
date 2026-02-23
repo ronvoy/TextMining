@@ -6,6 +6,8 @@ import shutil
 # Add backend to path (necessary to import internal modules)
 sys.path.append(str(Path(__file__).parent))
 
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+
 from backend.config import RAGConfig
 from backend.document_loader import load_documents_by_law_type
 from backend.embeddings import get_embedding_model
@@ -31,6 +33,15 @@ def build_four_vector_stores(config: RAGConfig):
     print(f"Initializing embedding model: {config.embedding_model_name}")
     print("This may take a moment on first run (downloading model)...\n")
     embedding_model = get_embedding_model(config)
+
+    # Text splitter: 512-token chunks aligned with one legal concept.
+    # chunk_overlap=50 preserves cross-sentence context at boundaries.
+    splitter = RecursiveCharacterTextSplitter(
+        chunk_size=config.chunk_size,
+        chunk_overlap=config.chunk_overlap,
+        separators=["\n\n", "\n", ". ", " ", ""],
+    )
+    print(f"Text splitter: chunk_size={config.chunk_size}, overlap={config.chunk_overlap}\n")
     
     law_types = ["Divorce", "Inheritance"]
     vector_store_dirs = []
@@ -52,8 +63,14 @@ def build_four_vector_stores(config: RAGConfig):
             continue
             
         # 2. Divide the documents into Codes and Cases using metadata['doc_type']
-        codes = [d for d in docs if d.metadata.get('doc_type') == 'code']
-        cases = [d for d in docs if d.metadata.get('doc_type') == 'case']
+        codes_raw = [d for d in docs if d.metadata.get('doc_type') == 'code']
+        cases_raw = [d for d in docs if d.metadata.get('doc_type') == 'case']
+
+        # 3. Chunk each group (512 tokens → focused semantic units)
+        codes = splitter.split_documents(codes_raw)
+        cases = splitter.split_documents(cases_raw)
+        print(f"  Codes: {len(codes_raw)} raw → {len(codes)} chunks")
+        print(f"  Cases: {len(cases_raw)} raw → {len(cases)} chunks")
         
         
         # --- A. Build Vector Store for CODES ---

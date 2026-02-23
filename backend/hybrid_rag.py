@@ -9,6 +9,10 @@ from typing import Dict, List, Optional, Tuple, Any
 import numpy as np
 from langchain_core.documents import Document
 
+# Lazy-loaded heavy models are cached here so they are only instantiated once
+# per process, regardless of how many queries are processed.
+_CROSS_ENCODER_CACHE: dict = {}
+
 # invece di: from backend.config import RAGConfig
 from .config import RAGConfig
 
@@ -354,6 +358,113 @@ def _similarity_rank_and_filter(
 
 
 # =====================================================================
+# 3b. BM25 + RRF hybrid re-ranking
+# =====================================================================
+
+def _bm25_rrf_rerank(
+    question: str,
+    docs: List[Document],
+    dense_order: List[int],
+    k_rrf: int = 60,
+) -> Tuple[List[Document], str]:
+    """
+    Fuse FAISS dense ranks with BM25 sparse ranks via Reciprocal Rank Fusion.
+
+    RRF formula: score(d) = 1/(k + rank_dense(d)) + 1/(k + rank_bm25(d))
+
+    BM25 captures exact legal terms ("Art. 536", "separazione consensuale") that
+    dense vectors may miss.  RRF is robust to score-scale differences between the
+    two systems.
+    """
+    from rank_bm25 import BM25Okapi
+
+    if not docs:
+        return docs, "BM25+RRF: no docs to rerank."
+
+    # Tokenise docs (simple whitespace; sufficient for re-ranking)
+    tokenized = [d.page_content.lower().split() for d in docs]
+    bm25 = BM25Okapi(tokenized)
+
+    q_tokens = question.lower().split()
+    bm25_scores = bm25.get_scores(q_tokens).tolist()
+
+    # BM25 rank order (best first)
+    bm25_order = sorted(range(len(docs)), key=lambda i: bm25_scores[i], reverse=True)
+
+    # Build rank maps (1-indexed)
+    dense_rank = {idx: r + 1 for r, idx in enumerate(dense_order)}
+    bm25_rank  = {idx: r + 1 for r, idx in enumerate(bm25_order)}
+
+    # RRF fusion
+    rrf_scores = [
+        1.0 / (k_rrf + dense_rank.get(i, len(docs) + 1))
+        + 1.0 / (k_rrf + bm25_rank.get(i, len(docs) + 1))
+        for i in range(len(docs))
+    ]
+    rrf_order  = sorted(range(len(docs)), key=lambda i: rrf_scores[i], reverse=True)
+    reranked   = [docs[i] for i in rrf_order]
+
+    top3 = [f"{rrf_scores[i]:.5f}" for i in rrf_order[:3]]
+    log  = (
+        f"BM25+RRF fusion ({len(docs)} docs): "
+        f"top-3 RRF scores = {top3}"
+    )
+    return reranked, log
+
+
+# =====================================================================
+# 3c. Cross-encoder reranking with threshold
+# =====================================================================
+
+def _cross_encoder_rerank(
+    question: str,
+    docs: List[Document],
+    model_name: str,
+    threshold: float = 0.0,
+    top_k: Optional[int] = None,
+) -> Tuple[List[Document], str]:
+    """
+    Score every (query, doc) pair with a cross-encoder and filter below threshold.
+
+    ms-marco cross-encoders return raw logits:
+      > 0  → model considers the doc relevant to the query  (keep)
+      < 0  → model considers the doc not relevant           (discard)
+
+    threshold=0.0 is therefore a natural cut-off that prevents irrelevant
+    documents from polluting the context window and hurting faithfulness/
+    precision metrics.
+    """
+    if not docs:
+        return docs, "Cross-encoder: no docs."
+
+    global _CROSS_ENCODER_CACHE
+    if model_name not in _CROSS_ENCODER_CACHE:
+        from sentence_transformers import CrossEncoder
+        _CROSS_ENCODER_CACHE[model_name] = CrossEncoder(model_name)
+    ce = _CROSS_ENCODER_CACHE[model_name]
+
+    pairs  = [(question, d.page_content) for d in docs]
+    scores = ce.predict(pairs).tolist()
+
+    scored      = [(docs[i], scores[i]) for i in range(len(docs)) if scores[i] >= threshold]
+    n_filtered  = len(docs) - len(scored)
+    scored.sort(key=lambda x: x[1], reverse=True)
+
+    if top_k:
+        scored = scored[:top_k]
+
+    result      = [d for d, _ in scored]
+    score_range = f"[{min(scores):.3f}, {max(scores):.3f}]" if scores else "[]"
+    log = (
+        f"Cross-encoder ({model_name}):\n"
+        f"  scored {len(docs)} docs  threshold={threshold:.3f}  "
+        f"score range={score_range}\n"
+        f"  filtered (below threshold): {n_filtered}  kept: {len(result)}"
+    )
+    return result, log
+
+
+# =====================================================================
 # 4. LLM-based law classification & metadata extraction 
 # =====================================================================
 
@@ -572,13 +683,19 @@ def _retrieve_from_db_hybrid(
     use_rerank: bool,
     rerank_metric: str = "cosine",
     metadata_filter: Optional[Dict[str, Any]] = None,
+    use_bm25: bool = False,
+    use_cross_encoder: bool = False,
+    cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+    cross_encoder_threshold: float = 0.0,
 ) -> Tuple[List[Document], str]:
     """
     Retrieve docs from a single FAISS DB combining:
       - metadata_filter (all fields = mandatory + marginal)
       - if that is too strict (len(docs) < top_k), fall back to ONLY mandatory filter:
            -> 'law' (Inheritance / Divorce)
-      - optional embedding-based similarity reranking (use_rerank flag)
+      - BM25 + RRF hybrid re-ranking (when use_bm25=True)
+      - optional embedding-based similarity re-ranking (use_rerank flag)
+      - cross-encoder final reranking + threshold filtering (when use_cross_encoder=True)
     """
     log_lines: List[str] = [f"[DB {db_name}] path={db_path}"]
 
@@ -623,13 +740,25 @@ def _retrieve_from_db_hybrid(
             f"[DB {db_name}] Raw docs from retriever: {len(raw_docs)}"
         )
 
+        # --- BM25 + RRF fusion (sparse + dense hybrid) ---
+        docs = raw_docs
+        if use_bm25 and docs:
+            dense_order = list(range(len(docs)))   # FAISS returns best-first
+            docs, bm25_log = _bm25_rrf_rerank(question, docs, dense_order)
+            local_logs.append(f"[DB {db_name}] {bm25_log}")
+        else:
+            local_logs.append(
+                f"[DB {db_name}] BM25+RRF DISABLED (use_bm25=False)."
+            )
+
+        # --- Embedding similarity re-rank (optional, after BM25+RRF) ---
         if use_rerank:
             local_logs.append(
                 f"[DB {db_name}] Similarity reranking ENABLED (use_rerank=True)."
             )
             docs, sim_log = _similarity_rank_and_filter(
                 question=question,
-                docs=raw_docs,
+                docs=docs,
                 embedding_model=embedding_model,
                 top_k=top_k,
                 min_sim=0.1,
@@ -639,9 +768,27 @@ def _retrieve_from_db_hybrid(
         else:
             local_logs.append(
                 f"[DB {db_name}] Similarity reranking DISABLED (use_rerank=False); "
-                f"using top_k={top_k} raw docs in original order."
+                f"using top_k={top_k} docs after BM25+RRF."
             )
-            docs = raw_docs[:top_k]
+            docs = docs[:top_k]
+
+        # --- Cross-encoder final rerank + threshold filter ---
+        if use_cross_encoder and docs:
+            local_logs.append(
+                f"[DB {db_name}] Cross-encoder reranking ENABLED."
+            )
+            docs, ce_log = _cross_encoder_rerank(
+                question=question,
+                docs=docs,
+                model_name=cross_encoder_model,
+                threshold=cross_encoder_threshold,
+                top_k=top_k,
+            )
+            local_logs.append(f"[DB {db_name}] {ce_log}")
+        else:
+            local_logs.append(
+                f"[DB {db_name}] Cross-encoder DISABLED (use_cross_encoder=False)."
+            )
 
         if not docs:
             local_logs.append(
@@ -898,6 +1045,11 @@ def hybrid_answer_question(
                 use_rerank=config.use_rerank,
                 rerank_metric=getattr(config, "rerank_metric", "cosine"),
                 metadata_filter=metadata_filter,
+                use_bm25=getattr(config, "use_bm25", False),
+                use_cross_encoder=getattr(config, "use_cross_encoder", False),
+                cross_encoder_model=getattr(config, "cross_encoder_model",
+                                            "cross-encoder/ms-marco-MiniLM-L-6-v2"),
+                cross_encoder_threshold=getattr(config, "cross_encoder_threshold", 0.0),
             )
             per_db_logs[db_name] = log_db
             all_docs.extend(docs_db)

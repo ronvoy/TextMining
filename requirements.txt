@@ -18,6 +18,7 @@ tf-keras  # Required for Keras 3 backwards compatibility with Transformers
 # Vector store and embeddings
 faiss-cpu>=1.7.4
 sentence-transformers>=2.3.1
+rank_bm25>=0.2.2
 
 # Data processing
 pandas>=2.0.0

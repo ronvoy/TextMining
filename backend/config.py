@@ -45,7 +45,10 @@ class RAGConfig:
     llm_model_name: str = "openai/gpt-4o-mini"
 
     embedding_provider: str = "huggingface"
-    embedding_model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+    # NOTE: Currently using all-MiniLM-L6-v2 (384d) to match existing FAISS indexes.
+    # Switch to "BAAI/bge-base-en-v1.5" (768d) AFTER rebuilding vector stores
+    # with build_vector_stores.py when raw data (Contest_Data/) is available.
+    embedding_model_name: str = "all-MiniLM-L6-v2"
     
     # ---------------- Data (JSON corpus) (omessi per brevità) ----------------
     #data_base_dir: str = r"C:\Users\vikya\Desktop\TM\Progetto_claude\Contest_Data"
@@ -90,12 +93,26 @@ class RAGConfig:
     rerank_metric: str = "cosine"  # "cosine", "dot_product", or "euclidean"
     use_cross_encoder: bool = True
     cross_encoder_model: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
+    # 0.0 = keep only docs with positive cross-encoder logit (relevant per model)
+    # ms-marco raw scores: positives → relevant, negatives → not relevant
+    cross_encoder_threshold: float = 0.0
     
+    # --- Chunking ---
+    # 512 tokens per chunk: aligns with one legal concept (article / clause)
+    # ensuring each embedding represents a focused semantic unit
+    chunk_size: int = 512
+    chunk_overlap: int = 50
+
+    # --- BM25 hybrid search ---
+    # Combines dense vector retrieval with BM25 keyword retrieval via RRF fusion.
+    # BM25 is especially powerful for legal text with exact article numbers/terms.
+    use_bm25: bool = True
+
     agentic_mode: str = "standard_rag"
     use_multiagent: bool = False
     
     llm_temperature: float = 0.2
-    llm_max_tokens: int = 384
+    llm_max_tokens: int = 768  # increased from 384 → allows fuller, better-cited answers
     
     logs_dir: str = "logs"
     enable_logging: bool = True
