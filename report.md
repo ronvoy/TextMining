@@ -1,5 +1,8 @@
 # RAGAS Evaluation Report — Legal RAG System
 
+Report to: Prof. Flora Amato
+Report by: Anindya Sunder Chakravarty, Rohan Baidya
+
 ## System Overview
 
 | Component | Detail |
@@ -153,3 +156,118 @@ The biggest gains are expected in **answer_relevancy** and **faithfulness**, whi
 3. **Chunk size optimization** — Analyze whether document chunks are too large or too small for the embedding model's optimal input length (MiniLM-L6 works best with ~128 tokens).
 4. **Upgrade embedding model** — Consider `BAAI/bge-base-en-v1.5` or `intfloat/e5-base-v2` which outperform MiniLM-L6 on retrieval benchmarks.
 5. **Automated ground truth pipeline** — Build a script to fetch ground truths from the external server and run RAGAS evaluation in batch without manual input.
+
+---
+
+## Architecture Components by RAG Mode
+
+The table below consolidates which components are used in each architecture currently documented in this project.
+
+| Component | Single Agent | Multi-Agent | Hybrid (Metadata + Vector) | Hybrid Multi-Agent |
+|---|---|---|---|---|
+| Intelligent router (legal vs general) | Optional/basic | Yes | Optional/basic | Yes |
+| Metadata extraction | Keyword/heuristic | Keyword + LLM routing | LLM structured extraction (LEGAL_METADATA_SCHEMA) | LLM structured extraction (LEGAL_METADATA_SCHEMA) |
+| DB candidate selection | Heuristic by query keywords | Supervisor LLM selection | Heuristic over extracted metadata | Heuristic over extracted metadata |
+| Retrieval backend | FAISS dense | FAISS dense per selected DB | FAISS dense + BM25 sparse fusion (RRF) | FAISS dense + BM25 sparse fusion (RRF) |
+| Two-phase fallback filter | No | No | Yes (full filter then law-only fallback) | Yes (full filter then law-only fallback) |
+| Similarity reranking | Yes (recommended) | Yes | Yes | Yes |
+| Reranking metric | cosine/dot/euclidean (cosine preferred) | cosine/dot/euclidean | cosine/dot/euclidean | cosine/dot/euclidean |
+| Cross-encoder threshold filter | No | No | Yes (`cross-encoder/ms-marco-MiniLM-L-6-v2`) | Yes (`cross-encoder/ms-marco-MiniLM-L-6-v2`) |
+| Per-DB isolated sub-agents | No | Yes | No | Yes |
+| Supervisor synthesis step | No | Yes | No | Yes |
+| Final answer generation | Single LLM call | Supervisor merges sub-agent outputs | Single LLM call with filtered context | Supervisor merges sub-agent outputs |
+
+---
+
+## Mermaid Process Flow Diagrams by Architecture
+
+### 1) Single Agent
+
+```mermaid
+flowchart TD
+  Q[User Question] --> S0{Need retrieval?}
+  S0 -->|No| S1[Direct LLM answer]
+  S1 --> F[Final Answer]
+
+  S0 -->|Yes| S2[Keyword metadata extraction]
+  S2 --> S3[Heuristic DB selection]
+  S3 --> S4[FAISS retrieval top_k]
+  S4 --> S5{Rerank enabled?}
+  S5 -->|Yes| S6[Similarity rerank and filter top_k_final]
+  S5 -->|No| S7[Use raw docs]
+  S6 --> S8[Build context]
+  S7 --> S8
+  S8 --> S9[Single LLM grounded answer]
+  S9 --> F
+```
+
+### 2) Multi-Agent (Supervisor)
+
+```mermaid
+flowchart TD
+  Q[User Question] --> M0[Intelligent router]
+  M0 -->|General| M1[Direct LLM answer]
+  M1 --> F[Final Answer]
+
+  M0 -->|Legal| M2[Metadata extraction]
+  M2 --> M3[Supervisor DB selection]
+  M3 --> M4[Spawn per-DB sub-agents]
+
+  M4 --> MA[Sub-agent DB_1 retrieve and answer]
+  M4 --> MB[Sub-agent DB_2 retrieve and answer]
+  M4 --> MC[Sub-agent DB_N retrieve and answer]
+
+  MA --> MS[Supervisor synthesis]
+  MB --> MS
+  MC --> MS
+  MS --> F
+```
+
+### 3) Hybrid (Metadata + Vector)
+
+```mermaid
+flowchart TD
+  Q[User Question] --> H1[LLM metadata extraction\nLEGAL_METADATA_SCHEMA]
+  H1 --> H2[Build metadata filter]
+  H2 --> H3[Heuristic DB candidates]
+  H3 --> H4[FAISS retrieval with full filter]
+  H4 --> H5{Enough docs?}
+  H5 -->|No| H6[Fallback law-only retrieval]
+  H5 -->|Yes| H7[Keep retrieved docs]
+  H6 --> H8[BM25 + RRF fusion]
+  H7 --> H8
+  H8 --> H9{Rerank enabled?}
+  H9 -->|Yes| H10[Similarity rerank to top_k_final]
+  H9 -->|No| H11[Skip similarity rerank]
+  H10 --> H12[Cross-encoder threshold filter]
+  H11 --> H12
+  H12 --> H13[Build context]
+  H13 --> H14[Single LLM answer]
+  H14 --> F[Final Answer]
+```
+
+### 4) Hybrid Multi-Agent
+
+```mermaid
+flowchart TD
+  Q[User Question] --> HM0[Intelligent router]
+  HM0 -->|General| HM1[Direct LLM answer]
+  HM1 --> F[Final Answer]
+
+  HM0 -->|Legal| HM2[LLM metadata extraction]
+  HM2 --> HM3[Metadata filter + DB candidate selection]
+  HM3 --> HM4[Two-phase retrieval per DB]
+  HM4 --> HM5[BM25 + RRF fusion]
+  HM5 --> HM6[Similarity rerank to top_k_final]
+  HM6 --> HM7[Cross-encoder threshold filter]
+  HM7 --> HM8[Partition docs by source DB]
+
+  HM8 --> HMA[Sub-agent DB_1 isolated answer]
+  HM8 --> HMB[Sub-agent DB_2 isolated answer]
+  HM8 --> HMC[Sub-agent DB_N isolated answer]
+
+  HMA --> HMS[Supervisor synthesis]
+  HMB --> HMS
+  HMC --> HMS
+  HMS --> F
+```

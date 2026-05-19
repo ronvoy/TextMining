@@ -13,7 +13,8 @@ google-generativeai
 # Hugging Face
 huggingface-hub>=0.20.0
 transformers>=4.36.0
-tf-keras  # Required for Keras 3 backwards compatibility with Transformers
+# Keep Transformers on PyTorch backend to avoid TensorFlow runtime issues
+# on Apple Silicon and other non-AVX environments.
 
 # Vector store and embeddings
 faiss-cpu>=1.7.4

@@ -8,6 +8,11 @@ to different sections via Streamlit multipage.
 import streamlit as st
 from pathlib import Path
 import sys
+import os
+
+# Force Transformers to skip TensorFlow backend imports.
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("USE_TF", "0")
 
 # Load .env before any backend module reads environment variables
 from dotenv import load_dotenv

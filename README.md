@@ -79,6 +79,10 @@ source .venv/bin/activate
 ```bash
 pip install --upgrade pip
 pip install -r requirements.txt
+
+# Apple Silicon (M1/M2): if TensorFlow was previously installed in this env,
+# remove it to avoid AVX-related crashes when starting Streamlit.
+pip uninstall -y tensorflow tf-keras keras tensorflow-estimator tensorflow-io-gcs-filesystem
 ```
 
 **3. Run the App**

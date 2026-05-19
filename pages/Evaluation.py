@@ -2,6 +2,11 @@ import streamlit as st
 import pandas as pd
 import json
 import os
+
+# Force Transformers to skip TensorFlow backend imports.
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("USE_TF", "0")
+
 from datasets import Dataset
 from dotenv import load_dotenv
 

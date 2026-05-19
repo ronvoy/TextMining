@@ -12,6 +12,10 @@ from datetime import datetime
 import sys
 import os
 
+# Force Transformers to skip TensorFlow backend imports.
+os.environ.setdefault("TRANSFORMERS_NO_TF", "1")
+os.environ.setdefault("USE_TF", "0")
+
 # 1. IMPORTANT: Load environment variables immediately
 from dotenv import load_dotenv
 load_dotenv()
