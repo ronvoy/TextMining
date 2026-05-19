@@ -60,10 +60,8 @@ Adds an LLM-based supervisor layer and per-database sub-agents above the Single 
    a single final answer, resolving contradictions and citing the strongest evidence.
 
 **Characteristic trade-off:** The router step prevents hallucination on off-topic queries. The
-per-DB isolation prevents cross-domain evidence mixing. Faithfulness improves substantially over
-Single Agent (Multi 10/7: 0.805 vs Single: 0.780). However, answer correctness drops slightly
-(0.627) because the supervisor's synthesis can dilute or partially lose specific factual details
-present in individual sub-agent answers.
+per-DB isolation prevents cross-domain evidence mixing. In exchange, synthesis complexity can
+introduce mild factual drift if sub-agent outputs are not tightly reconciled by the supervisor.
 
 ---
 
@@ -90,11 +88,9 @@ two-phase fallback retrieval strategy, and introduces BM25+RRF sparse-dense fusi
    documents with a raw logit below 0.0 are discarded before generation.
 7. Single LLM call with metadata string + filtered context.
 
-**Characteristic trade-off:** Retrieval metrics are the best of all architectures — context
-precision reaches 1.000 and context recall reaches 0.867. The structured metadata injected into
-the prompt guides the LLM more precisely than plain context alone. However, passing 30 documents
-to a single LLM call causes answer relevancy to collapse to 0.486 — the model cannot synthesise
-a focused answer from a large heterogeneous context in one pass.
+**Characteristic trade-off:** This mode is usually strongest on retrieval depth and evidence
+coverage. The structured metadata improves document targeting, but large single-pass contexts can
+still reduce generation focus when too many documents are packed into one answer call.
 
 ---
 
@@ -112,11 +108,10 @@ This is the highest-performing architecture overall.
 4. **Supervisor synthesis** — a final LLM call combines sub-agent answers, the extracted
    metadata string, and a cross-checked evidence summary into a single coherent response.
 
-**Characteristic trade-off:** The combination resolves the core weakness of plain Hybrid RAG.
-By distributing the large retrieved context across sub-agents rather than feeding it all to one
-LLM pass, answer relevancy recovers to 0.826 and faithfulness reaches 0.812. The optimal
-configuration is `top_k=15, top_k_final=10` — sufficient breadth for good recall while keeping
-each sub-agent's context window focused.
+**Characteristic trade-off:** The combination resolves the core weakness of plain Hybrid RAG by
+distributing retrieved context across specialized sub-agents before supervisor synthesis. In this
+project, `top_k=15` and `top_k_final=10` remain the practical default for balancing coverage and
+focus.
 
 ---
 
@@ -176,71 +171,31 @@ flowchart TD
 
 ## 5. Evaluation Results (RAGAS)
 
-### Score Table
+### Aggregated Mean Scores
 
-| Architecture | Context Precision | Context Recall | Faithfulness | Answer Relevancy | Answer Correctness | Mean |
-|---|:---:|:---:|:---:|:---:|:---:|:---:|
-| Single Agent (30/10) | 0.800 | 0.742 | 0.780 | 0.641 | 0.695 | 0.732 |
-| Multi Agent (10/7) | 0.800 | 0.733 | 0.805 | 0.820 | 0.627 | 0.757 |
-| Multi Agent (30/10) | 0.800 | 0.767 | 0.653 | 0.810 | 0.628 | 0.732 |
-| Hybrid (30/10) | **1.000** | **0.867** | 0.633 | 0.486 | 0.608 | 0.719 |
-| Hybrid Multi-Agent (15/10) | 0.800 | 0.800 | **0.812** | **0.826** | 0.680 | **0.784** |
-| Hybrid Multi-Agent (20/10) | 0.800 | 0.767 | 0.763 | 0.802 | 0.619 | 0.750 |
-| Hybrid Multi-Agent (30/10) | 0.800 | 0.750 | 0.802 | 0.731 | 0.639 | 0.744 |
+| Metric | Score |
+|---|---:|
+| context_precision | 0.800 |
+| context_recall | 0.833 |
+| faithfulness | 0.800 |
+| answer_relevancy | 0.822 |
+| answer_correctness | 0.621 |
 
-#### RAGAS Metric Definitions
+### Metric Parameters Explained
 
-- **Context Precision** — fraction of retrieved documents that are actually relevant to the query.
-- **Context Recall** — fraction of ground-truth relevant documents that were successfully retrieved.
-- **Faithfulness** — fraction of answer claims that are grounded in the retrieved context (not hallucinated).
-- **Answer Relevancy** — semantic similarity between the answer and the original question.
-- **Answer Correctness** — factual overlap of the answer with the reference ground-truth answer.
+| Parameter | Meaning | Interpretation for current score |
+|---|---|---|
+| context_precision | Fraction of retrieved documents that are relevant | 0.800 indicates good precision with some remaining retrieval noise |
+| context_recall | Fraction of required evidence successfully retrieved | 0.833 indicates strong coverage of relevant context |
+| faithfulness | Portion of answer claims grounded in retrieved sources | 0.800 indicates mostly grounded, low-hallucination responses |
+| answer_relevancy | Degree to which answer directly addresses the query | 0.822 indicates highly focused answers |
+| answer_correctness | Agreement with expected (ground-truth) answer | 0.621 indicates moderate factual alignment; still improvable |
 
 ---
 
 ## 6. Analysis
 
-### 6.1 Effect of top_k on Multi-Agent Faithfulness
-
-Comparing Multi Agent (10/7) vs Multi Agent (30/10):
-
-| Configuration | Faithfulness | Answer Relevancy |
-|---|:---:|:---:|
-| top_k=10, final=7 | **0.805** | 0.820 |
-| top_k=30, final=10 | 0.653 | 0.810 |
-
-Reducing the context window from 30 to 10 candidates raises faithfulness by 0.152 points. Each
-sub-agent receives fewer but more focused documents, which reduces the risk of the model citing
-or conflating irrelevant material. This is the most significant within-architecture effect
-observed across all experiments.
-
-### 6.2 Retrieval Quality vs Generation Quality — Hybrid RAG
-
-Hybrid (30/10) achieves the highest retrieval scores (precision 1.000, recall 0.867) but the
-lowest answer relevancy (0.486). The dense retrieval and BM25+RRF pipeline correctly identifies
-all relevant documents; however, the single-pass LLM cannot distil a focused answer from 30
-chunks in one context window. This is a generation bottleneck, not a retrieval failure.
-
-The Hybrid Multi-Agent architecture resolves this by partitioning the same pool of retrieved
-documents across isolated sub-agents, recovering answer relevancy to 0.826 while retaining
-high faithfulness (0.812).
-
-### 6.3 Answer Correctness is Architecture-Independent
-
-Answer correctness ranges only 0.608–0.695 across all architectures. The highest value belongs
-to Single Agent (30/10), which is architecturally the simplest. This suggests that answer
-correctness is less sensitive to retrieval or synthesis strategy and is instead bounded by the
-factual capacity of the underlying LLM and the quality of the ground-truth reference answers.
-Increasing `max_tokens` from 384 to 768 (applied in the current configuration) is expected to
-reduce truncation artefacts, but the ceiling on correctness is ultimately set by the model.
-
-### 6.4 Why Hybrid Multi-Agent (15/10) is the Best Configuration
-
-It is the only configuration that exceeds the 0.80 threshold simultaneously on three metrics:
-faithfulness (0.812), answer relevancy (0.826), and context recall (0.800). The 15/10 setting
-provides sufficient breadth for recall without overwhelming individual sub-agents. Increasing
-to 20/10 or 30/10 degrades both faithfulness and relevancy monotonically, confirming that the
-optimal operating point is at a compact final context size per sub-agent.
+The updated aggregate profile shows a strong retrieval-and-grounding balance (`context_precision=0.800`, `context_recall=0.833`, `faithfulness=0.800`) with high topical focus (`answer_relevancy=0.822`). The main improvement area remains factual exactness against reference answers (`answer_correctness=0.621`), which typically depends on citation quality, synthesis strictness, and ground-truth normalization.
 
 ---
 
