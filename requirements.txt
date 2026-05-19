@@ -27,6 +27,8 @@ numpy>=1.24.0,<2.0.0
 
 # Web interface
 streamlit>=1.30.0
+Flask>=3.0.0
+Flask-Session>=0.8.0
 
 # Evaluation (for RAGAS later)
 ragas>=0.1.0

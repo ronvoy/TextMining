@@ -1,0 +1,298 @@
+{% extends "base.html" %}
+{% block title %}Chatbot – Legal RAG{% endblock %}
+
+{% block extra_style %}
+html, body { height: 100%; }
+#layout    { display: flex; height: calc(100vh - 56px); overflow: hidden; }
+/* Sidebar */
+#sidebar   { width: 290px; min-width: 290px; background: #fff;
+             border-right: 1px solid #dee2e6; overflow-y: auto; padding: 1rem; }
+/* Chat area */
+#chat-area { flex: 1; display: flex; flex-direction: column; overflow: hidden; }
+#messages  { flex: 1; overflow-y: auto; padding: 1rem; }
+#input-bar { padding: .75rem 1rem; border-top: 1px solid #dee2e6; background: #fff; }
+/* Bubbles */
+.bubble-user      { background: #0d6efd; color: #fff; border-radius: 18px 18px 4px 18px; max-width: 75%; }
+.bubble-assistant { background: #fff; border: 1px solid #dee2e6; border-radius: 18px 18px 18px 4px; max-width: 85%; }
+.bubble-wrap      { display: flex; margin-bottom: .75rem; }
+.bubble-wrap.user { justify-content: flex-end; }
+pre { white-space: pre-wrap; word-break: break-word; }
+{% endblock %}
+
+{% block content %}
+<div id="layout">
+
+  <!-- ═══ SIDEBAR ═══════════════════════════════════════════════════════ -->
+  <div id="sidebar">
+    <h6 class="fw-bold"><i class="bi bi-gear"></i> Configuration</h6>
+
+    <label class="form-label fw-semibold mt-2">Agent Architecture</label>
+    <select id="cfg-agent" class="form-select form-select-sm mb-2">
+      <option value="single"       {% if params.agent_mode == 'single'       %}selected{% endif %}>Single Agent (ReAct)</option>
+      <option value="multi"        {% if params.agent_mode == 'multi'        %}selected{% endif %}>Multi-Agent (Supervisor)</option>
+      <option value="hybrid"       {% if params.agent_mode == 'hybrid'       %}selected{% endif %}>Hybrid (Metadata + Vector)</option>
+      <option value="hybrid_multi" {% if params.agent_mode == 'hybrid_multi' %}selected{% endif %}>Hybrid Multi-Agent</option>
+    </select>
+
+    <label class="form-label fw-semibold mt-1">Initial retrieval top_k
+      <span id="lbl-topk" class="text-muted fw-normal">{{ params.top_k }}</span>
+    </label>
+    <input type="range" class="form-range" id="cfg-topk"
+           min="5" max="30" step="1" value="{{ params.top_k }}"
+           oninput="document.getElementById('lbl-topk').textContent=this.value">
+
+    <label class="form-label fw-semibold mt-1">Final docs top_k_final
+      <span id="lbl-topkf" class="text-muted fw-normal">{{ params.top_k_final }}</span>
+    </label>
+    <input type="range" class="form-range" id="cfg-topkf"
+           min="3" max="20" step="1" value="{{ params.top_k_final }}"
+           oninput="document.getElementById('lbl-topkf').textContent=this.value">
+
+    <div class="form-check mt-2">
+      <input class="form-check-input" type="checkbox" id="cfg-rerank"
+             {% if params.use_rerank %}checked{% endif %}>
+      <label class="form-check-label" for="cfg-rerank">Enable reranking</label>
+    </div>
+
+    <div id="rerank-opts" {% if not params.use_rerank %}style="display:none"{% endif %}>
+      <label class="form-label fw-semibold mt-2">Reranking metric</label>
+      <select id="cfg-metric" class="form-select form-select-sm">
+        <option value="cosine"      {% if params.rerank_metric == 'cosine'      %}selected{% endif %}>Cosine Similarity</option>
+        <option value="dot_product" {% if params.rerank_metric == 'dot_product' %}selected{% endif %}>Dot Product</option>
+        <option value="euclidean"   {% if params.rerank_metric == 'euclidean'   %}selected{% endif %}>Euclidean Distance</option>
+      </select>
+    </div>
+
+    <div class="form-check mt-2">
+      <input class="form-check-input" type="checkbox" id="cfg-reasoning"
+             {% if params.show_reasoning %}checked{% endif %}>
+      <label class="form-check-label" for="cfg-reasoning">Show reasoning trace</label>
+    </div>
+
+    <hr>
+
+    <button class="btn btn-sm btn-primary w-100 mb-2" onclick="saveConfig()">
+      <i class="bi bi-floppy"></i> Save Settings
+    </button>
+    <button class="btn btn-sm btn-outline-secondary w-100 mb-2" onclick="exportConversation()">
+      <i class="bi bi-download"></i> Export Conversation
+    </button>
+    <button class="btn btn-sm btn-outline-danger w-100" onclick="clearConversation()">
+      <i class="bi bi-trash"></i> Clear Conversation
+    </button>
+
+    <hr>
+    <div class="text-muted small">
+      <strong>LLM:</strong> {{ llm_model }}<br>
+      <strong>Embeddings:</strong> {{ embedding_model }}<br>
+      <strong>Vector DBs:</strong> {{ db_names | length }}
+      <ul class="mb-0 ps-3 mt-1">
+        {% for db in db_names %}
+          <li>
+            {% if '_codes' in db %}<i class="bi bi-file-text"></i>
+            {% elif '_cases' in db %}<i class="bi bi-balance-scale"></i>
+            {% else %}<i class="bi bi-folder"></i>{% endif %}
+            {{ db }}
+          </li>
+        {% endfor %}
+      </ul>
+    </div>
+  </div><!-- /sidebar -->
+
+  <!-- ═══ CHAT AREA ═════════════════════════════════════════════════════ -->
+  <div id="chat-area">
+    <div id="messages"></div>
+
+    <div id="input-bar" class="d-flex gap-2">
+      <input id="question-input" type="text" class="form-control"
+             placeholder="Ask a legal question…" onkeydown="if(event.key==='Enter')sendMessage()">
+      <button class="btn btn-primary px-3" onclick="sendMessage()" id="send-btn">
+        <i class="bi bi-send-fill"></i>
+      </button>
+    </div>
+  </div>
+
+</div><!-- /layout -->
+{% endblock %}
+
+{% block extra_script %}
+<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+<script>
+/* ── Helpers ──────────────────────────────────────────────────────────────── */
+function getConfig() {
+  return {
+    agent_mode:    document.getElementById('cfg-agent').value,
+    top_k:         parseInt(document.getElementById('cfg-topk').value),
+    top_k_final:   parseInt(document.getElementById('cfg-topkf').value),
+    use_rerank:    document.getElementById('cfg-rerank').checked,
+    rerank_metric: document.getElementById('cfg-metric').value,
+    show_reasoning: document.getElementById('cfg-reasoning').checked,
+  };
+}
+
+document.getElementById('cfg-rerank').addEventListener('change', function () {
+  document.getElementById('rerank-opts').style.display = this.checked ? '' : 'none';
+});
+
+/* ── Save config ──────────────────────────────────────────────────────────── */
+async function saveConfig() {
+  await fetch('/api/config', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(getConfig()),
+  });
+  const btn = event.target.closest('button');
+  btn.textContent = '✓ Saved';
+  setTimeout(() => { btn.innerHTML = '<i class="bi bi-floppy"></i> Save Settings'; }, 1500);
+}
+
+/* ── Clear ────────────────────────────────────────────────────────────────── */
+async function clearConversation() {
+  if (!confirm('Clear the conversation?')) return;
+  await fetch('/api/clear', { method: 'POST' });
+  document.getElementById('messages').innerHTML = '';
+}
+
+/* ── Export ───────────────────────────────────────────────────────────────── */
+function exportConversation() {
+  window.location.href = '/api/export';
+}
+
+/* ── Append a bubble ─────────────────────────────────────────────────────── */
+function appendBubble(role, content, extras) {
+  const wrap = document.createElement('div');
+  wrap.className = `bubble-wrap ${role}`;
+
+  const bubble = document.createElement('div');
+  bubble.className = `bubble-${role} p-3 shadow-sm`;
+
+  if (role === 'user') {
+    bubble.textContent = content;
+  } else {
+    bubble.innerHTML = marked.parse(content);
+
+    /* Sources accordion */
+    if (extras && extras.sources && extras.sources.length) {
+      const accId = 'src-' + Date.now();
+      let rows = extras.sources.map((s, i) => `
+        <div class="mb-2 border rounded p-2 small">
+          <strong>Doc ${i+1}</strong>
+          <span class="badge bg-secondary ms-1">${s.db_name}</span>
+          <span class="badge bg-light text-dark">${s.country}</span><br>
+          <span class="text-muted">Law: ${s.law} &bull; File: ${s.source}</span><br>
+          <pre class="mt-1 bg-light p-1 rounded">${s.snippet}…</pre>
+        </div>`).join('');
+      bubble.innerHTML += `
+        <div class="accordion mt-2" id="${accId}">
+          <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+              <button class="accordion-button collapsed py-1 px-2 small bg-light" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#${accId}c">
+                📚 Sources (${extras.sources.length})
+              </button>
+            </h2>
+            <div id="${accId}c" class="accordion-collapse collapse">
+              <div class="accordion-body p-2">${rows}</div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    /* Reasoning trace */
+    if (extras && extras.reasoning) {
+      const rId = 'rsn-' + Date.now();
+      bubble.innerHTML += `
+        <div class="accordion mt-2" id="${rId}">
+          <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+              <button class="accordion-button collapsed py-1 px-2 small bg-light" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#${rId}c">
+                🔍 Reasoning Trace
+              </button>
+            </h2>
+            <div id="${rId}c" class="accordion-collapse collapse">
+              <div class="accordion-body p-2 small"><pre>${extras.reasoning}</pre></div>
+            </div>
+          </div>
+        </div>`;
+    }
+
+    /* Extracted metadata */
+    if (extras && extras.metadata && Object.keys(extras.metadata).length) {
+      const mId = 'meta-' + Date.now();
+      bubble.innerHTML += `
+        <div class="accordion mt-2" id="${mId}">
+          <div class="accordion-item border-0">
+            <h2 class="accordion-header">
+              <button class="accordion-button collapsed py-1 px-2 small bg-light" type="button"
+                      data-bs-toggle="collapse" data-bs-target="#${mId}c">
+                📋 Extracted Metadata
+              </button>
+            </h2>
+            <div id="${mId}c" class="accordion-collapse collapse">
+              <div class="accordion-body p-2"><pre class="small">${JSON.stringify(extras.metadata, null, 2)}</pre></div>
+            </div>
+          </div>
+        </div>`;
+    }
+  }
+
+  wrap.appendChild(bubble);
+  const msgs = document.getElementById('messages');
+  msgs.appendChild(wrap);
+  msgs.scrollTop = msgs.scrollHeight;
+}
+
+/* ── Send message ─────────────────────────────────────────────────────────── */
+async function sendMessage() {
+  const input = document.getElementById('question-input');
+  const question = input.value.trim();
+  if (!question) return;
+
+  input.value = '';
+  input.disabled = true;
+  document.getElementById('send-btn').disabled = true;
+
+  appendBubble('user', question, null);
+
+  /* Thinking indicator */
+  const thinkId = 'think-' + Date.now();
+  const thinkWrap = document.createElement('div');
+  thinkWrap.id = thinkId;
+  thinkWrap.className = 'bubble-wrap assistant';
+  thinkWrap.innerHTML = `<div class="bubble-assistant p-3 text-muted fst-italic">
+    <span class="spinner-border spinner-border-sm me-2"></span>Thinking…</div>`;
+  document.getElementById('messages').appendChild(thinkWrap);
+  document.getElementById('messages').scrollTop = 99999;
+
+  try {
+    const resp = await fetch('/api/chat', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ question, config: getConfig() }),
+    });
+    const data = await resp.json();
+
+    /* Remove thinking bubble */
+    document.getElementById(thinkId)?.remove();
+
+    if (data.error) {
+      appendBubble('assistant', `⚠️ **Error:** ${data.error}`, null);
+    } else {
+      appendBubble('assistant', data.answer, {
+        sources:   data.sources,
+        reasoning: data.reasoning,
+        metadata:  data.metadata,
+      });
+    }
+  } catch (err) {
+    document.getElementById(thinkId)?.remove();
+    appendBubble('assistant', `⚠️ **Network error:** ${err}`, null);
+  }
+
+  input.disabled = false;
+  document.getElementById('send-btn').disabled = false;
+  input.focus();
+}
+</script>
+{% endblock %}

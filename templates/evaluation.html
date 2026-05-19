@@ -1,0 +1,257 @@
+{% extends "base.html" %}
+{% block title %}Evaluation – Legal RAG{% endblock %}
+
+{% block extra_style %}
+#eval-table th, #eval-table td { vertical-align: middle; }
+{% endblock %}
+
+{% block content %}
+<div class="container-fluid py-4">
+  <h2><i class="bi bi-bar-chart-fill"></i> RAG Evaluation <small class="text-muted fs-6">(OpenRouter Powered)</small></h2>
+  <p class="text-muted">
+    Upload a session JSON exported from the Chatbot, optionally fill in ground-truth answers,
+    then run RAGAS evaluation.
+  </p>
+
+  <div class="row g-3">
+    <!-- Left: upload + turns -->
+    <div class="col-lg-7">
+
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h6 class="card-title">1. Upload Session JSON</h6>
+          <input type="file" id="json-upload" class="form-control" accept=".json">
+          <div class="form-text">Export a conversation from the Chatbot page first.</div>
+        </div>
+      </div>
+
+      <div id="turns-section" style="display:none">
+        <h6>2. Ground Truth Input <span class="text-muted fw-normal small">(optional – enables Context Precision/Recall &amp; Answer Correctness)</span></h6>
+        <div id="turns-container"></div>
+      </div>
+
+    </div>
+
+    <!-- Right: sidebar info + run -->
+    <div class="col-lg-5">
+      <div class="card shadow-sm mb-3">
+        <div class="card-body">
+          <h6><i class="bi bi-info-circle"></i> Configuration</h6>
+          <p class="small text-muted mb-1">LLM Judge: <strong>openai/gpt-4o-mini</strong> via OpenRouter</p>
+          <p class="small text-muted mb-3">Embeddings: <strong>all-MiniLM-L6-v2</strong> (HuggingFace)</p>
+          <hr>
+          <h6>RAGAS Metrics</h6>
+          <ul class="small mb-0">
+            <li><strong>Faithfulness</strong> — answer grounded in context</li>
+            <li><strong>Answer Relevancy</strong> — answer addresses the question</li>
+            <li class="text-muted">Context Precision * — retrieved docs are relevant</li>
+            <li class="text-muted">Context Recall * — all relevant docs retrieved</li>
+            <li class="text-muted">Answer Correctness * — matches ground truth</li>
+          </ul>
+          <p class="small text-muted mt-1">* Requires at least one Ground Truth</p>
+        </div>
+      </div>
+
+      <button id="run-btn" class="btn btn-success w-100 mb-3" onclick="runEvaluation()" disabled>
+        <i class="bi bi-play-fill"></i> 3. Run RAGAS Evaluation
+      </button>
+
+      <!-- Score cards -->
+      <div id="score-cards" style="display:none">
+        <h6>📈 Aggregated Scores</h6>
+        <div id="cards-row" class="row g-2 mb-3"></div>
+        <h6>📝 Per-Interaction Detail</h6>
+        <div class="table-responsive">
+          <table class="table table-sm table-bordered" id="eval-table">
+            <thead class="table-dark" id="eval-thead"></thead>
+            <tbody id="eval-tbody"></tbody>
+          </table>
+        </div>
+      </div>
+
+    </div>
+  </div>
+</div>
+{% endblock %}
+
+{% block extra_script %}
+<script>
+let evaluationData = [];   // [{id, question, answer, contexts, ground_truth}]
+
+/* ── Load JSON file ───────────────────────────────────────────────────────── */
+document.getElementById('json-upload').addEventListener('change', function () {
+  const file = this.files[0];
+  if (!file) return;
+
+  const reader = new FileReader();
+  reader.onload = function (e) {
+    try {
+      const json = JSON.parse(e.target.result);
+      evaluationData = parseSessions(json);
+      if (evaluationData.length === 0) {
+        alert('No valid Question/Answer pairs found in this file.');
+        return;
+      }
+      renderTurns();
+      document.getElementById('turns-section').style.display = '';
+      document.getElementById('run-btn').disabled = false;
+      document.getElementById('score-cards').style.display = 'none';
+    } catch (err) {
+      alert('Invalid JSON file: ' + err.message);
+    }
+  };
+  reader.readAsText(file);
+});
+
+function parseSessions(json) {
+  const sessions = Array.isArray(json) ? json : [json];
+  const flat = [];
+  let id = 1;
+  for (const session of sessions) {
+    const history = session.history || [];
+    for (let i = 0; i < history.length - 1; i++) {
+      const u = history[i], a = history[i + 1];
+      if (u.role === 'user' && a.role === 'assistant' && u.content && a.content) {
+        flat.push({
+          id:           id++,
+          question:     u.content.trim(),
+          answer:       a.content.trim(),
+          contexts:     a.contexts || [],
+          ground_truth: a.ground_truth || '',
+        });
+      }
+    }
+  }
+  return flat;
+}
+
+/* ── Render turns ─────────────────────────────────────────────────────────── */
+function renderTurns() {
+  const container = document.getElementById('turns-container');
+  container.innerHTML = '';
+  for (const item of evaluationData) {
+    const card = document.createElement('div');
+    card.className = 'accordion mb-2 shadow-sm';
+    card.id = `acc-${item.id}`;
+    card.innerHTML = `
+      <div class="accordion-item">
+        <h2 class="accordion-header">
+          <button class="accordion-button collapsed py-2" type="button"
+                  data-bs-toggle="collapse" data-bs-target="#turn-${item.id}">
+            <strong class="me-2">Q${item.id}:</strong>
+            <span class="text-truncate" style="max-width:60ch">${item.question}</span>
+          </button>
+        </h2>
+        <div id="turn-${item.id}" class="accordion-collapse collapse">
+          <div class="accordion-body">
+            <p class="small"><strong>Question:</strong> ${item.question}</p>
+            <p class="small"><strong>Answer:</strong> ${item.answer}</p>
+            <label class="form-label fw-semibold small">Ground Truth (Ideal Answer)</label>
+            <textarea class="form-control form-control-sm mb-2" rows="3"
+                      id="gt-${item.id}"
+                      placeholder="Enter the ideal answer here…">${item.ground_truth}</textarea>
+            <details class="small text-muted">
+              <summary>📚 Retrieved Contexts (${item.contexts.length})</summary>
+              ${item.contexts.map((c, j) => `<p class="mt-1"><em>Doc ${j+1}:</em> ${c.substring(0,300)}…</p>`).join('')}
+            </details>
+          </div>
+        </div>
+      </div>`;
+    container.appendChild(card);
+  }
+}
+
+/* ── Run evaluation ───────────────────────────────────────────────────────── */
+async function runEvaluation() {
+  /* Collect current ground truths from textareas */
+  const rows = evaluationData.map(item => ({
+    question:     item.question,
+    answer:       item.answer,
+    contexts:     item.contexts,
+    ground_truth: (document.getElementById(`gt-${item.id}`)?.value || '').trim(),
+  }));
+
+  const btn = document.getElementById('run-btn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Evaluating… (this may take a minute)';
+
+  try {
+    const resp = await fetch('/api/evaluate', {
+      method:  'POST',
+      headers: {'Content-Type': 'application/json'},
+      body:    JSON.stringify({ rows }),
+    });
+    const data = await resp.json();
+
+    if (data.error) {
+      alert('Evaluation error: ' + data.error);
+      return;
+    }
+
+    renderResults(data.scores, data.per_row, rows);
+    document.getElementById('score-cards').style.display = '';
+
+  } catch (err) {
+    alert('Network error: ' + err.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-play-fill"></i> 3. Run RAGAS Evaluation';
+  }
+}
+
+/* ── Render results ───────────────────────────────────────────────────────── */
+const METRIC_LABELS = {
+  faithfulness:      'Faithfulness',
+  answer_relevancy:  'Answer Relevancy',
+  context_precision: 'Context Precision',
+  context_recall:    'Context Recall',
+  answer_correctness:'Answer Correctness',
+};
+
+function scoreColor(v) {
+  if (v === null || v === undefined) return 'secondary';
+  if (v >= 0.8) return 'success';
+  if (v >= 0.5) return 'warning';
+  return 'danger';
+}
+
+function renderResults(scores, perRow, rows) {
+  /* Score cards */
+  const cardsRow = document.getElementById('cards-row');
+  cardsRow.innerHTML = '';
+  for (const [key, label] of Object.entries(METRIC_LABELS)) {
+    if (!(key in scores)) continue;
+    const v = scores[key];
+    cardsRow.innerHTML += `
+      <div class="col-6">
+        <div class="card text-center border-${scoreColor(v)}">
+          <div class="card-body py-2">
+            <div class="fw-bold text-${scoreColor(v)} fs-4">${v.toFixed(2)}</div>
+            <div class="small text-muted">${label}</div>
+          </div>
+        </div>
+      </div>`;
+  }
+
+  /* Table header */
+  const cols = Object.keys(perRow[0] || {});
+  document.getElementById('eval-thead').innerHTML =
+    '<tr><th>#</th><th>Question</th>' +
+    cols.map(c => `<th>${METRIC_LABELS[c] || c}</th>`).join('') +
+    '</tr>';
+
+  /* Table rows */
+  const tbody = document.getElementById('eval-tbody');
+  tbody.innerHTML = '';
+  perRow.forEach((row, i) => {
+    const q = rows[i]?.question || '';
+    let cells = cols.map(c => {
+      const v = row[c];
+      const txt = (v !== undefined && v !== null) ? v.toFixed(2) : '—';
+      return `<td class="text-center text-${scoreColor(v)}">${txt}</td>`;
+    }).join('');
+    tbody.innerHTML += `<tr><td>${i+1}</td><td class="small">${q.substring(0,80)}…</td>${cells}</tr>`;
+  });
+}
+</script>
+{% endblock %}
